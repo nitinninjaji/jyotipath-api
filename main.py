@@ -1,3 +1,4 @@
+from datetime import timedelta
 # main.py
 from flask import Flask, request, jsonify
 import swisseph as swe
@@ -51,7 +52,7 @@ def compute_dasha(moon_lon, birth_local_naive):
     current_start = birth_local_naive
     start_idx = LORD_SEQUENCE.index(nak_lord)
     seq.append({"lord":nak_lord, "start":current_start.isoformat(),
-                "end": (current_start + (first_maha_years*365.2425).__round__(8) * 0).__class__.__name__})  # placeholder to be replaced below
+                "end": current_start + timedelta(days=first_maha_years*365.2425).__class__.__name__})  # placeholder to be replaced below
 
     # Simpler build: compute with days for accuracy
     seq = []
