@@ -1,7 +1,7 @@
 Flask==2.3.2
 requests==2.31.0
 pytz==2024.1
-timezonefinder==6.1.10
+timezonefinder==6.0.2
 python-dateutil==2.8.2
-pyswisseph==2.12.0
+pyswisseph==2.10.3.2
 gunicorn==20.1.0
