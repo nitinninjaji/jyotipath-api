@@ -1,7 +1,8 @@
-from datetime import datetime, timedelta
+# main.py
 from flask import Flask, request, jsonify
 import swisseph as swe
 import requests
+from datetime import datetime
 import pytz
 from timezonefinder import TimezoneFinder
 from dateutil.relativedelta import relativedelta
@@ -47,36 +48,27 @@ def compute_dasha(moon_lon, birth_local_naive):
     fraction_left = (NAK_WIDTH - degree_into) / NAK_WIDTH
     first_maha_years = VIM_MAHAS[nak_lord] * fraction_left
 
+    # Maha sequence
     seq = []
     current_start = birth_local_naive
     start_idx = LORD_SEQUENCE.index(nak_lord)
-
-    # Maha Dasha sequence
-    lord = nak_lord
-    end = current_start + timedelta(days=first_maha_years*365.2425)
     seq.append({
-        "lord": lord,
+        "lord": nak_lord,
         "start": current_start.isoformat(),
-        "end": end.isoformat(),
-        "years": round(first_maha_years,6)
+        "end": (current_start + relativedelta(days=int(first_maha_years * 365.2425))).isoformat(),
+        "years": round(first_maha_years, 6)
     })
-    current_start = end
+    current_start = datetime.fromisoformat(seq[-1]["end"])
     idx = (start_idx + 1) % 9
-
     while current_start.year <= 2055:
         lord = LORD_SEQUENCE[idx]
         years = VIM_MAHAS[lord]
-        end = current_start + timedelta(days=years * 365.2425)
-        seq.append({
-            "lord": lord,
-            "start": current_start.isoformat(),
-            "end": end.isoformat(),
-            "years": years
-        })
+        end = current_start + relativedelta(days=int(years * 365.2425))
+        seq.append({"lord": lord, "start": current_start.isoformat(), "end": end.isoformat(), "years": years})
         current_start = end
         idx = (idx + 1) % 9
 
-    # find current maha
+    # current maha
     now = datetime.utcnow()
     maha_current = None
     for s in seq:
@@ -86,7 +78,7 @@ def compute_dasha(moon_lon, birth_local_naive):
             maha_current = s
             break
 
-    # antardashas inside current maha
+    # antardashas inside maha_current
     antars = []
     if maha_current:
         maha_len = maha_current["years"]
@@ -95,68 +87,65 @@ def compute_dasha(moon_lon, birth_local_naive):
         for i in range(9):
             lord = LORD_SEQUENCE[(start_idx + i) % 9]
             antar_years = (VIM_MAHAS[lord] / 120.0) * maha_len
-            end = start + timedelta(days=antar_years * 365.2425)
-            antars.append({
-                "lord": lord,
-                "start": start.isoformat(),
-                "end": end.isoformat(),
-                "years": round(antar_years,6)
-            })
+            end = start + relativedelta(days=int(antar_years * 365.2425))
+            antars.append({"lord": lord, "start": start.isoformat(), "end": end.isoformat(), "years": round(antar_years, 6)})
             start = end
 
-    return {
-        "nak_index": nak_index,
-        "degree_into_nak": round(degree_into,6),
-        "nak_lord": nak_lord,
-        "maha_sequence": seq,
-        "current_maha": maha_current,
-        "antardashas": antars
-    }
+    return {"nak_index": nak_index, "degree_into_nak": round(degree_into,6), "nak_lord": nak_lord,
+            "maha_sequence": seq, "current_maha": maha_current, "antardashas": antars}
 
 @app.route("/compute_natal", methods=["POST"])
 def compute_natal():
     payload = request.get_json(force=True)
     name = payload.get("name","Unknown")
-    date = payload.get("date")
-    time = payload.get("time")
+    date = payload.get("date")   # expected DD/MM/YYYY from form
+    time = payload.get("time")   # e.g., "12:30 AM"
     place = payload.get("place")
 
     if not (date and time and place):
         return jsonify({"error":"please provide date, time, place"}), 400
 
+    # --- parse date inside the function ---
+    dt_local_naive = None
+    date_formats = [
+        "%d/%m/%Y %I:%M %p",  # DD/MM/YYYY 12-hour
+        "%d/%m/%Y %H:%M",     # DD/MM/YYYY 24-hour
+        "%Y-%m-%d %I:%M %p",  # ISO 12-hour
+        "%Y-%m-%d %H:%M"      # ISO 24-hour
+    ]
+    for fmt in date_formats:
+        try:
+            dt_local_naive = datetime.strptime(f"{date} {time}", fmt)
+            break
+        except Exception:
+            continue
+    if dt_local_naive is None:
+        return jsonify({"error":"bad_date_time_format",
+                        "details":f"Unable to parse date/time: {date} {time}"}), 400
+
+    # geocode
     try:
         lat, lon, place_name = geocode_place(place)
     except Exception as e:
         return jsonify({"error":"geocode_failed","details":str(e)}), 400
 
-# parse naive local datetime
-dt_local_naive = None
-date_formats = [
-    "%d/%m/%Y %I:%M %p",  # DD/MM/YYYY 12-hour, e.g., 09/07/1979 12:30 AM
-    "%d/%m/%Y %H:%M",     # DD/MM/YYYY 24-hour
-    "%Y-%m-%d %I:%M %p",  # ISO 12-hour
-    "%Y-%m-%d %H:%M"      # ISO 24-hour
-]
-
-for fmt in date_formats:
+    # timezone
     try:
-        dt_local_naive = datetime.strptime(f"{date} {time}", fmt)
-        break
-    except Exception:
-        continue
+        tzname, tz_offset, dt_local_with_tz = tz_from_latlon(lat, lon, dt_local_naive)
+    except Exception as e:
+        return jsonify({"error":"timezone_failed","details":str(e)}), 400
 
-if dt_local_naive is None:
-    return jsonify({"error":"bad_date_time_format","details":f"Unable to parse date/time: {date} {time}"}), 400
-
+    # convert to UTC for ephemeris
+    dt_utc = dt_local_with_tz.astimezone(pytz.utc).replace(tzinfo=None)
 
     # compute JD UT
     jd = swe.julday(dt_utc.year, dt_utc.month, dt_utc.day,
                     dt_utc.hour + dt_utc.minute/60.0 + dt_utc.second/3600.0)
 
+    # planets
     planet_codes = {
         "Sun":swe.SUN, "Moon":swe.MOON, "Mars":swe.MARS, "Mercury":swe.MERCURY,
-        "Jupiter":swe.JUPITER, "Venus":swe.VENUS, "Saturn":swe.SATURN,
-        "Rahu":swe.MEAN_NODE, "Ketu":swe.TRUE_NODE
+        "Jupiter":swe.JUPITER, "Venus":swe.VENUS, "Saturn":swe.SATURN, "Rahu":swe.MEAN_NODE, "Ketu":swe.TRUE_NODE
     }
     planets = {}
     for pname, pcode in planet_codes.items():
@@ -174,6 +163,7 @@ if dt_local_naive is None:
     # dasha
     dasha = compute_dasha(planets["Moon"], dt_local_naive)
 
+    # Response
     resp = {
         "input_received": {"place_name": place_name, "timezone": tzname, "tz_offset_hours": tz_offset},
         "planets": planets,
@@ -186,8 +176,5 @@ if dt_local_naive is None:
 def home():
     return "JyotiPath Swiss Ephemeris API running."
 
-import os
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Render sets PORT automatically
-    app.run(host="0.0.0.0", port=port)
-
+    app.run(host="0.0.0.0", port=8080)
