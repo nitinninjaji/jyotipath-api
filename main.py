@@ -1,11 +1,10 @@
-from datetime import timedelta
-# main.py
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 import swisseph as swe
 import requests
-from datetime import datetime
 import pytz
 from timezonefinder import TimezoneFinder
+from dateutil.relativedelta import relativedelta
 
 app = Flask(__name__)
 
@@ -17,7 +16,7 @@ tf = TimezoneFinder()
 def geocode_place(place):
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": place, "format": "json", "limit": 1}
-    headers = {"User-Agent": "JyotiPath/1.0 (nitindotnijhawan@gmail.com)"}  # replace email@example.com with your email
+    headers = {"User-Agent": "JyotiPath/1.0 (nitindotnijhawan@gmail.com)"}
     resp = requests.get(url, params=params, headers=headers, timeout=15)
     resp.raise_for_status()
     data = resp.json()
@@ -51,24 +50,29 @@ def compute_dasha(moon_lon, birth_local_naive):
     seq = []
     current_start = birth_local_naive
     start_idx = LORD_SEQUENCE.index(nak_lord)
-    seq.append({"lord":nak_lord, "start":current_start.isoformat(),
-                "end": current_start + timedelta(days=first_maha_years*365.2425).__class__.__name__})  # placeholder to be replaced below
 
-    # Simpler build: compute with days for accuracy
-    seq = []
-    from dateutil.relativedelta import relativedelta
-    current_start = birth_local_naive
-    seq.append({"lord": nak_lord,
-                "start": current_start.isoformat(),
-                "end": (current_start + relativedelta(days=int(first_maha_years * 365.2425))).isoformat(),
-                "years": round(first_maha_years, 6)})
-    current_start = datetime.fromisoformat(seq[-1]["end"])
+    # Maha Dasha sequence
+    lord = nak_lord
+    end = current_start + timedelta(days=first_maha_years*365.2425)
+    seq.append({
+        "lord": lord,
+        "start": current_start.isoformat(),
+        "end": end.isoformat(),
+        "years": round(first_maha_years,6)
+    })
+    current_start = end
     idx = (start_idx + 1) % 9
+
     while current_start.year <= 2055:
         lord = LORD_SEQUENCE[idx]
         years = VIM_MAHAS[lord]
-        end = current_start + relativedelta(days=int(years * 365.2425))
-        seq.append({"lord":lord, "start":current_start.isoformat(), "end":end.isoformat(), "years":years})
+        end = current_start + timedelta(days=years * 365.2425)
+        seq.append({
+            "lord": lord,
+            "start": current_start.isoformat(),
+            "end": end.isoformat(),
+            "years": years
+        })
         current_start = end
         idx = (idx + 1) % 9
 
@@ -82,7 +86,7 @@ def compute_dasha(moon_lon, birth_local_naive):
             maha_current = s
             break
 
-    # antardashas inside maha_current
+    # antardashas inside current maha
     antars = []
     if maha_current:
         maha_len = maha_current["years"]
@@ -91,19 +95,30 @@ def compute_dasha(moon_lon, birth_local_naive):
         for i in range(9):
             lord = LORD_SEQUENCE[(start_idx + i) % 9]
             antar_years = (VIM_MAHAS[lord] / 120.0) * maha_len
-            end = start + relativedelta(days=int(antar_years * 365.2425))
-            antars.append({"lord":lord, "start":start.isoformat(), "end":end.isoformat(), "years":round(antar_years,6)})
+            end = start + timedelta(days=antar_years * 365.2425)
+            antars.append({
+                "lord": lord,
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "years": round(antar_years,6)
+            })
             start = end
 
-    return {"nak_index": nak_index, "degree_into_nak": round(degree_into,6), "nak_lord": nak_lord,
-            "maha_sequence": seq, "current_maha": maha_current, "antardashas": antars}
+    return {
+        "nak_index": nak_index,
+        "degree_into_nak": round(degree_into,6),
+        "nak_lord": nak_lord,
+        "maha_sequence": seq,
+        "current_maha": maha_current,
+        "antardashas": antars
+    }
 
 @app.route("/compute_natal", methods=["POST"])
 def compute_natal():
     payload = request.get_json(force=True)
     name = payload.get("name","Unknown")
-    date = payload.get("date")   # expected YYYY-MM-DD
-    time = payload.get("time")   # expected e.g. "12:30 AM" or "00:30"
+    date = payload.get("date")
+    time = payload.get("time")
     place = payload.get("place")
 
     if not (date and time and place):
@@ -116,7 +131,6 @@ def compute_natal():
 
     # parse naive local datetime
     try:
-        # try common formats
         dt_local_naive = datetime.strptime(f"{date} {time}", "%Y-%m-%d %I:%M %p")
     except Exception:
         try:
@@ -129,17 +143,16 @@ def compute_natal():
     except Exception as e:
         return jsonify({"error":"timezone_failed","details":str(e)}), 400
 
-    # convert to UTC for ephemeris
     dt_utc = dt_local_with_tz.astimezone(pytz.utc).replace(tzinfo=None)
 
     # compute JD UT
     jd = swe.julday(dt_utc.year, dt_utc.month, dt_utc.day,
                     dt_utc.hour + dt_utc.minute/60.0 + dt_utc.second/3600.0)
 
-    # planets
     planet_codes = {
         "Sun":swe.SUN, "Moon":swe.MOON, "Mars":swe.MARS, "Mercury":swe.MERCURY,
-        "Jupiter":swe.JUPITER, "Venus":swe.VENUS, "Saturn":swe.SATURN, "Rahu":swe.MEAN_NODE, "Ketu":swe.TRUE_NODE
+        "Jupiter":swe.JUPITER, "Venus":swe.VENUS, "Saturn":swe.SATURN,
+        "Rahu":swe.MEAN_NODE, "Ketu":swe.TRUE_NODE
     }
     planets = {}
     for pname, pcode in planet_codes.items():
@@ -157,7 +170,6 @@ def compute_natal():
     # dasha
     dasha = compute_dasha(planets["Moon"], dt_local_naive)
 
-    # Response
     resp = {
         "input_received": {"place_name": place_name, "timezone": tzname, "tz_offset_hours": tz_offset},
         "planets": planets,
