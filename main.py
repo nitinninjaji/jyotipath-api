@@ -16,7 +16,7 @@ tf = TimezoneFinder()
 def geocode_place(place):
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": place, "format": "json", "limit": 1}
-    headers = {"User-Agent": "JyotiPath/1.0 (email@example.com)"}  # replace email@example.com with your email
+    headers = {"User-Agent": "JyotiPath/1.0 (nitindotnijhawan@gmail.com)"}  # replace email@example.com with your email
     resp = requests.get(url, params=params, headers=headers, timeout=15)
     resp.raise_for_status()
     data = resp.json()
