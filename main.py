@@ -129,21 +129,25 @@ def compute_natal():
     except Exception as e:
         return jsonify({"error":"geocode_failed","details":str(e)}), 400
 
-    # parse naive local datetime
+# parse naive local datetime
+dt_local_naive = None
+date_formats = [
+    "%d/%m/%Y %I:%M %p",  # DD/MM/YYYY 12-hour, e.g., 09/07/1979 12:30 AM
+    "%d/%m/%Y %H:%M",     # DD/MM/YYYY 24-hour
+    "%Y-%m-%d %I:%M %p",  # ISO 12-hour
+    "%Y-%m-%d %H:%M"      # ISO 24-hour
+]
+
+for fmt in date_formats:
     try:
-        dt_local_naive = datetime.strptime(f"{date} {time}", "%Y-%m-%d %I:%M %p")
+        dt_local_naive = datetime.strptime(f"{date} {time}", fmt)
+        break
     except Exception:
-        try:
-            dt_local_naive = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
-        except Exception as e:
-            return jsonify({"error":"bad_date_time_format","details":str(e)}), 400
+        continue
 
-    try:
-        tzname, tz_offset, dt_local_with_tz = tz_from_latlon(lat, lon, dt_local_naive)
-    except Exception as e:
-        return jsonify({"error":"timezone_failed","details":str(e)}), 400
+if dt_local_naive is None:
+    return jsonify({"error":"bad_date_time_format","details":f"Unable to parse date/time: {date} {time}"}), 400
 
-    dt_utc = dt_local_with_tz.astimezone(pytz.utc).replace(tzinfo=None)
 
     # compute JD UT
     jd = swe.julday(dt_utc.year, dt_utc.month, dt_utc.day,
