@@ -1,21 +1,19 @@
 # main.py
 from flask import Flask, request, jsonify
 import swisseph as swe
-import requests
 from datetime import datetime
 import pytz
 from timezonefinder import TimezoneFinder
 from dateutil.relativedelta import relativedelta
+import requests
 
 app = Flask(__name__)
 
 # Use Lahiri sidereal
 swe.set_sid_mode(swe.SIDM_LAHIRI)
+
 tf = TimezoneFinder()
 
-# --------------------------------------------
-# Utility Functions
-# --------------------------------------------
 def geocode_place(place):
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": place, "format": "json", "limit": 1}
@@ -32,20 +30,15 @@ def tz_from_latlon(lat, lon, dt_local_naive):
     if not tzname:
         tzname = tf.closest_timezone_at(lat=lat, lng=lon)
     if not tzname:
-        raise ValueError("Timezone not found for this location")
+        raise ValueError("Timezone not found")
     tz = pytz.timezone(tzname)
     dt_local = tz.localize(dt_local_naive)
     offset_hours = dt_local.utcoffset().total_seconds() / 3600.0
     return tzname, offset_hours, dt_local
 
-# --------------------------------------------
-# Vimshottari Dasha Calculations
-# --------------------------------------------
+# Vimshottari constants
 NAK_WIDTH = 13 + 1/3
-VIM_MAHAS = {
-    "Ketu":7,"Venus":20,"Sun":6,"Moon":10,"Mars":7,
-    "Rahu":18,"Jupiter":16,"Saturn":19,"Mercury":17
-}
+VIM_MAHAS = {"Ketu":7,"Venus":20,"Sun":6,"Moon":10,"Mars":7,"Rahu":18,"Jupiter":16,"Saturn":19,"Mercury":17}
 LORD_SEQUENCE = ["Ketu","Venus","Sun","Moon","Mars","Rahu","Jupiter","Saturn","Mercury"]
 
 def compute_dasha(moon_lon, birth_local_naive):
@@ -96,111 +89,55 @@ def compute_dasha(moon_lon, birth_local_naive):
             start = end
 
     return {
-        "nak_index": nak_index, "degree_into_nak": round(degree_into,6),
-        "nak_lord": nak_lord, "maha_sequence": seq,
-        "current_maha": maha_current, "antardashas": antars
+        "nak_index": nak_index,
+        "degree_into_nak": round(degree_into,6),
+        "nak_lord": nak_lord,
+        "maha_sequence": seq,
+        "current_maha": maha_current,
+        "antardashas": antars
     }
 
-# --------------------------------------------
-# Human-readable Astrology Report Generator
-# --------------------------------------------
-def generate_readable_report(planets, dasha):
-    """Return a detailed, easy-to-understand reading for client reports."""
-    asc = planets.get("Ascendant", 0)
-    moon = planets.get("Moon", 0)
-    sun = planets.get("Sun", 0)
-
-    # Very simplified sign detection
-    signs = [
-        "Aries","Taurus","Gemini","Cancer","Leo","Virgo",
-        "Libra","Scorpio","Sagittarius","Capricorn","Aquarius","Pisces"
-    ]
-    asc_sign = signs[int(asc // 30)]
-    moon_sign = signs[int(moon // 30)]
-    sun_sign = signs[int(sun // 30)]
-
-    summary = (
-        f"You are born with {asc_sign} rising, {moon_sign} Moon and {sun_sign} Sun. "
-        "This forms the foundation of your personality. "
-        f"As an ascendant of {asc_sign}, you tend to express yourself through "
-        f"{'initiative and courage' if asc_sign=='Aries' else 'practical stability' if asc_sign=='Taurus' else 'mental curiosity' if asc_sign=='Gemini' else 'emotional depth and care' if asc_sign=='Cancer' else 'confidence and creativity' if asc_sign=='Leo' else 'precision and service' if asc_sign=='Virgo' else 'balance and diplomacy' if asc_sign=='Libra' else 'intensity and transformation' if asc_sign=='Scorpio' else 'vision and optimism' if asc_sign=='Sagittarius' else 'discipline and strategy' if asc_sign=='Capricorn' else 'innovation and freedom' if asc_sign=='Aquarius' else 'sensitivity and imagination'}. "
-        f"The Moon in {moon_sign} shows your emotional world, while the Sun in {sun_sign} represents your soul purpose."
-    )
-
-    current_maha = dasha.get("current_maha", {}).get("lord", "Unknown")
-    timeline = [
-        {"phase": "Past (≈3.5 years before)", "influence": "Themes of closure, emotional lessons, and karmic resolution."},
-        {"phase": "Present", "influence": f"You are currently in the influence of {current_maha} Mahadasha, focusing on its key lessons and growth areas."},
-        {"phase": "Future (≈3.5 years ahead)", "influence": "Expansion into new opportunities, clarity of purpose, and spiritual renewal."}
-    ]
-
-    remedies = [
-        "Practice gratitude meditation daily to balance your emotional field.",
-        "Chant 'Om Namah Shivaya' or your planetary mantra on auspicious days.",
-        "Keep a balance between material and spiritual pursuits.",
-        "Offer water to the rising Sun every morning with mindfulness."
-    ]
-
-    return {
-        "summary": summary,
-        "timeline": timeline,
-        "remedies": remedies
-    }
-
-# --------------------------------------------
-# Main API Endpoint
-# --------------------------------------------
 @app.route("/compute_natal", methods=["POST"])
 def compute_natal():
     payload = request.get_json(force=True)
     name = payload.get("name","Unknown")
-    date = payload.get("date")   # expected DD/MM/YYYY
-    time = payload.get("time")   # e.g. 12:30 AM
+    date = payload.get("date")   # DD/MM/YYYY
+    time = payload.get("time")
     place = payload.get("place")
 
     if not (date and time and place):
         return jsonify({"error":"please provide date, time, place"}), 400
 
-    # Parse date
     dt_local_naive = None
-    for fmt in ["%d/%m/%Y %I:%M %p", "%d/%m/%Y %H:%M", "%Y-%m-%d %I:%M %p", "%Y-%m-%d %H:%M"]:
+    for fmt in ["%d/%m/%Y %I:%M %p","%d/%m/%Y %H:%M","%Y-%m-%d %I:%M %p","%Y-%m-%d %H:%M"]:
         try:
             dt_local_naive = datetime.strptime(f"{date} {time}", fmt)
             break
         except Exception:
             continue
     if dt_local_naive is None:
-        return jsonify({"error":"bad_date_time_format","details":f"Unable to parse date/time: {date} {time}"}), 400
+        return jsonify({"error":"bad_date_time_format",
+                        "details":f"Unable to parse date/time: {date} {time}"}), 400
 
-    # Geocode
     try:
         lat, lon, place_name = geocode_place(place)
-    except Exception as e:
-        return jsonify({"error":"geocode_failed","details":str(e)}), 400
-
-    # Timezone
-    try:
         tzname, tz_offset, dt_local_with_tz = tz_from_latlon(lat, lon, dt_local_naive)
     except Exception as e:
-        return jsonify({"error":"timezone_failed","details":str(e)}), 400
+        return jsonify({"error":"geocode_or_timezone_failed","details":str(e)}), 400
 
-    # Convert to UTC
     dt_utc = dt_local_with_tz.astimezone(pytz.utc).replace(tzinfo=None)
     jd = swe.julday(dt_utc.year, dt_utc.month, dt_utc.day,
                     dt_utc.hour + dt_utc.minute/60.0 + dt_utc.second/3600.0)
 
-    # Planetary longitudes
     planet_codes = {
         "Sun":swe.SUN,"Moon":swe.MOON,"Mars":swe.MARS,"Mercury":swe.MERCURY,
-        "Jupiter":swe.JUPITER,"Venus":swe.VENUS,"Saturn":swe.SATURN,
-        "Rahu":swe.MEAN_NODE,"Ketu":swe.TRUE_NODE
+        "Jupiter":swe.JUPITER,"Venus":swe.VENUS,"Saturn":swe.SATURN,"Rahu":swe.MEAN_NODE,"Ketu":swe.TRUE_NODE
     }
     planets = {}
     for pname, pcode in planet_codes.items():
         val = swe.calc_ut(jd, pcode)[0][0] % 360
         planets[pname] = round(val,6)
 
-    # Ascendant
     try:
         _, ascmc = swe.houses_ex(jd, lat, lon, b'P')
         asc = ascmc[0]
@@ -208,17 +145,13 @@ def compute_natal():
         asc = swe.houses(jd, lat, lon)[0][0]
     planets["Ascendant"] = round(asc % 360,6)
 
-    # Dasha & Readable Report
     dasha = compute_dasha(planets["Moon"], dt_local_naive)
-    readable = generate_readable_report(planets, dasha)
 
-    # Final Response
     resp = {
         "input_received": {"place_name": place_name, "timezone": tzname, "tz_offset_hours": tz_offset},
         "planets": planets,
         "dasha": dasha,
-        "ayanamsha": "Lahiri",
-        "readable_report": readable
+        "ayanamsha": "Lahiri"
     }
     return jsonify(resp), 200
 
