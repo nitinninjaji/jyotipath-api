@@ -1,11 +1,11 @@
 # main.py
 from flask import Flask, request, jsonify
 import swisseph as swe
+import requests
 from datetime import datetime
 import pytz
 from timezonefinder import TimezoneFinder
 from dateutil.relativedelta import relativedelta
-import requests
 
 app = Flask(__name__)
 
@@ -30,7 +30,7 @@ def tz_from_latlon(lat, lon, dt_local_naive):
     if not tzname:
         tzname = tf.closest_timezone_at(lat=lat, lng=lon)
     if not tzname:
-        raise ValueError("Timezone not found")
+        raise ValueError("Timezone not found for this location")
     tz = pytz.timezone(tzname)
     dt_local = tz.localize(dt_local_naive)
     offset_hours = dt_local.utcoffset().total_seconds() / 3600.0
@@ -48,6 +48,7 @@ def compute_dasha(moon_lon, birth_local_naive):
     fraction_left = (NAK_WIDTH - degree_into) / NAK_WIDTH
     first_maha_years = VIM_MAHAS[nak_lord] * fraction_left
 
+    # Maha sequence
     seq = []
     current_start = birth_local_naive
     start_idx = LORD_SEQUENCE.index(nak_lord)
@@ -67,6 +68,7 @@ def compute_dasha(moon_lon, birth_local_naive):
         current_start = end
         idx = (idx + 1) % 9
 
+    # current maha
     now = datetime.utcnow()
     maha_current = None
     for s in seq:
@@ -76,6 +78,7 @@ def compute_dasha(moon_lon, birth_local_naive):
             maha_current = s
             break
 
+    # antardashas inside maha_current
     antars = []
     if maha_current:
         maha_len = maha_current["years"]
@@ -88,63 +91,70 @@ def compute_dasha(moon_lon, birth_local_naive):
             antars.append({"lord": lord, "start": start.isoformat(), "end": end.isoformat(), "years": round(antar_years, 6)})
             start = end
 
-    return {
-        "nak_index": nak_index,
-        "degree_into_nak": round(degree_into,6),
-        "nak_lord": nak_lord,
-        "maha_sequence": seq,
-        "current_maha": maha_current,
-        "antardashas": antars
-    }
+    return {"nak_index": nak_index, "degree_into_nak": round(degree_into,6), "nak_lord": nak_lord,
+            "maha_sequence": seq, "current_maha": maha_current, "antardashas": antars}
 
 @app.route("/compute_natal", methods=["POST"])
 def compute_natal():
     payload = request.get_json(force=True)
     name = payload.get("name","Unknown")
-    date = payload.get("date")   # DD/MM/YYYY
-    time = payload.get("time")
+    date = payload.get("date")   # expected DD/MM/YYYY from form
+    time = payload.get("time")   # e.g., "12:30 AM"
     place = payload.get("place")
 
     if not (date and time and place):
         return jsonify({"error":"please provide date, time, place"}), 400
 
     dt_local_naive = None
-    for fmt in ["%d/%m/%Y %I:%M %p","%d/%m/%Y %H:%M","%Y-%m-%d %I:%M %p","%Y-%m-%d %H:%M"]:
+    date_formats = ["%d/%m/%Y %I:%M %p","%d/%m/%Y %H:%M","%Y-%m-%d %I:%M %p","%Y-%m-%d %H:%M"]
+    for fmt in date_formats:
         try:
             dt_local_naive = datetime.strptime(f"{date} {time}", fmt)
             break
-        except Exception:
+        except:
             continue
     if dt_local_naive is None:
         return jsonify({"error":"bad_date_time_format",
                         "details":f"Unable to parse date/time: {date} {time}"}), 400
 
+    # geocode
     try:
         lat, lon, place_name = geocode_place(place)
+    except Exception as e:
+        return jsonify({"error":"geocode_failed","details":str(e)}), 400
+
+    # timezone
+    try:
         tzname, tz_offset, dt_local_with_tz = tz_from_latlon(lat, lon, dt_local_naive)
     except Exception as e:
-        return jsonify({"error":"geocode_or_timezone_failed","details":str(e)}), 400
+        return jsonify({"error":"timezone_failed","details":str(e)}), 400
 
+    # UTC for ephemeris
     dt_utc = dt_local_with_tz.astimezone(pytz.utc).replace(tzinfo=None)
+
+    # JD UT
     jd = swe.julday(dt_utc.year, dt_utc.month, dt_utc.day,
                     dt_utc.hour + dt_utc.minute/60.0 + dt_utc.second/3600.0)
 
+    # Planets
     planet_codes = {
-        "Sun":swe.SUN,"Moon":swe.MOON,"Mars":swe.MARS,"Mercury":swe.MERCURY,
-        "Jupiter":swe.JUPITER,"Venus":swe.VENUS,"Saturn":swe.SATURN,"Rahu":swe.MEAN_NODE,"Ketu":swe.TRUE_NODE
+        "Sun":swe.SUN, "Moon":swe.MOON, "Mars":swe.MARS, "Mercury":swe.MERCURY,
+        "Jupiter":swe.JUPITER, "Venus":swe.VENUS, "Saturn":swe.SATURN, "Rahu":swe.MEAN_NODE, "Ketu":swe.TRUE_NODE
     }
     planets = {}
     for pname, pcode in planet_codes.items():
         val = swe.calc_ut(jd, pcode)[0][0] % 360
         planets[pname] = round(val,6)
 
+    # Ascendant
     try:
         _, ascmc = swe.houses_ex(jd, lat, lon, b'P')
         asc = ascmc[0]
-    except Exception:
+    except:
         asc = swe.houses(jd, lat, lon)[0][0]
     planets["Ascendant"] = round(asc % 360,6)
 
+    # dasha
     dasha = compute_dasha(planets["Moon"], dt_local_naive)
 
     resp = {
