@@ -8,12 +8,10 @@ from timezonefinder import TimezoneFinder
 from dateutil.relativedelta import relativedelta
 
 app = Flask(__name__)
-
-# Use Lahiri sidereal
 swe.set_sid_mode(swe.SIDM_LAHIRI)
-
 tf = TimezoneFinder()
 
+# ---------------- Helper functions ----------------
 def geocode_place(place):
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": place, "format": "json", "limit": 1}
@@ -26,9 +24,7 @@ def geocode_place(place):
     return float(data[0]["lat"]), float(data[0]["lon"]), data[0].get("display_name", place)
 
 def tz_from_latlon(lat, lon, dt_local_naive):
-    tzname = tf.timezone_at(lat=lat, lng=lon)
-    if not tzname:
-        tzname = tf.closest_timezone_at(lat=lat, lng=lon)
+    tzname = tf.timezone_at(lat=lat, lng=lon) or tf.closest_timezone_at(lat=lat, lng=lon)
     if not tzname:
         raise ValueError("Timezone not found for this location")
     tz = pytz.timezone(tzname)
@@ -48,7 +44,6 @@ def compute_dasha(moon_lon, birth_local_naive):
     fraction_left = (NAK_WIDTH - degree_into) / NAK_WIDTH
     first_maha_years = VIM_MAHAS[nak_lord] * fraction_left
 
-    # Maha sequence
     seq = []
     current_start = birth_local_naive
     start_idx = LORD_SEQUENCE.index(nak_lord)
@@ -68,7 +63,6 @@ def compute_dasha(moon_lon, birth_local_naive):
         current_start = end
         idx = (idx + 1) % 9
 
-    # current maha
     now = datetime.utcnow()
     maha_current = None
     for s in seq:
@@ -78,7 +72,6 @@ def compute_dasha(moon_lon, birth_local_naive):
             maha_current = s
             break
 
-    # antardashas inside maha_current
     antars = []
     if maha_current:
         maha_len = maha_current["years"]
@@ -94,12 +87,13 @@ def compute_dasha(moon_lon, birth_local_naive):
     return {"nak_index": nak_index, "degree_into_nak": round(degree_into,6), "nak_lord": nak_lord,
             "maha_sequence": seq, "current_maha": maha_current, "antardashas": antars}
 
+# ---------------- API ----------------
 @app.route("/compute_natal", methods=["POST"])
 def compute_natal():
     payload = request.get_json(force=True)
     name = payload.get("name","Unknown")
-    date = payload.get("date")   # expected DD/MM/YYYY from form
-    time = payload.get("time")   # e.g., "12:30 AM"
+    date = payload.get("date")
+    time = payload.get("time")
     place = payload.get("place")
 
     if not (date and time and place):
@@ -111,32 +105,20 @@ def compute_natal():
         try:
             dt_local_naive = datetime.strptime(f"{date} {time}", fmt)
             break
-        except:
+        except Exception:
             continue
     if dt_local_naive is None:
-        return jsonify({"error":"bad_date_time_format",
-                        "details":f"Unable to parse date/time: {date} {time}"}), 400
+        return jsonify({"error":"bad_date_time_format","details":f"Unable to parse date/time: {date} {time}"}), 400
 
-    # geocode
     try:
         lat, lon, place_name = geocode_place(place)
-    except Exception as e:
-        return jsonify({"error":"geocode_failed","details":str(e)}), 400
-
-    # timezone
-    try:
         tzname, tz_offset, dt_local_with_tz = tz_from_latlon(lat, lon, dt_local_naive)
     except Exception as e:
-        return jsonify({"error":"timezone_failed","details":str(e)}), 400
+        return jsonify({"error":"location_error","details":str(e)}), 400
 
-    # UTC for ephemeris
     dt_utc = dt_local_with_tz.astimezone(pytz.utc).replace(tzinfo=None)
+    jd = swe.julday(dt_utc.year, dt_utc.month, dt_utc.day, dt_utc.hour + dt_utc.minute/60.0 + dt_utc.second/3600.0)
 
-    # JD UT
-    jd = swe.julday(dt_utc.year, dt_utc.month, dt_utc.day,
-                    dt_utc.hour + dt_utc.minute/60.0 + dt_utc.second/3600.0)
-
-    # Planets
     planet_codes = {
         "Sun":swe.SUN, "Moon":swe.MOON, "Mars":swe.MARS, "Mercury":swe.MERCURY,
         "Jupiter":swe.JUPITER, "Venus":swe.VENUS, "Saturn":swe.SATURN, "Rahu":swe.MEAN_NODE, "Ketu":swe.TRUE_NODE
@@ -146,15 +128,12 @@ def compute_natal():
         val = swe.calc_ut(jd, pcode)[0][0] % 360
         planets[pname] = round(val,6)
 
-    # Ascendant
     try:
         _, ascmc = swe.houses_ex(jd, lat, lon, b'P')
-        asc = ascmc[0]
+        planets["Ascendant"] = round(ascmc[0] % 360,6)
     except:
-        asc = swe.houses(jd, lat, lon)[0][0]
-    planets["Ascendant"] = round(asc % 360,6)
+        planets["Ascendant"] = round(swe.houses(jd, lat, lon)[0][0] % 360,6)
 
-    # dasha
     dasha = compute_dasha(planets["Moon"], dt_local_naive)
 
     resp = {
